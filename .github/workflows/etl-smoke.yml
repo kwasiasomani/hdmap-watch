@@ -43,7 +43,7 @@ jobs:
           # Load only runs against S3 if HDMAP_WATCH_BUCKET / AWS secrets are configured
           # on this repo (Settings -> Secrets and variables -> Actions) -- otherwise
           # this is a credential-free smoke test of extract + transform only.
-          if [ -n "$BUCKET" ]; then
+          if [ -n "$BUCKET" ] && [ -n "$AWS_ACCESS_KEY_ID" ] && [ -n "$AWS_SECRET_ACCESS_KEY" ]; then
             python -m hdmap_watch.etl.run_etl --log-id "$LOG_ID" --split "$SPLIT" --bucket "$BUCKET" --skip-upload-raw
           else
             python -m hdmap_watch.etl.run_etl --log-id "$LOG_ID" --split "$SPLIT" --no-upload

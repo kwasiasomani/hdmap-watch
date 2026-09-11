@@ -15,8 +15,17 @@ dependencies = [
     "shapely",
     "pandas",
     "pyarrow",
-    "av2",
     "boto3",
+    # av2 itself is installed separately with --no-deps (see README /
+    # CI) — its declared dependencies unconditionally include torch +
+    # the full NVIDIA CUDA toolkit + kornia + numba + polars (~7GB),
+    # none of which the modules this project actually imports
+    # (av2.geometry.geometry, av2.map.map_api) touch. These five are
+    # the real, verified import-time dependencies of those two modules.
+    "matplotlib",
+    "opencv-python-headless",
+    "pillow",
+    "universal-pathlib",
 ]
 
 [project.optional-dependencies]
@@ -24,7 +33,6 @@ dev = [
     "pytest",
     "ruff",
     "jupyter",
-    "matplotlib",
     "moto[s3]",
 ]
 

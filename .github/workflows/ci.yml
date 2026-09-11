@@ -17,7 +17,14 @@ jobs:
           cache: "pip"
 
       - name: Install
-        run: pip install -e ".[dev]"
+        run: |
+          pip install -e ".[dev]"
+          # av2's own declared deps pull in torch + the full NVIDIA CUDA
+          # toolkit + kornia + numba + polars (~7GB) — none of it used by
+          # the two av2 modules this project imports. --no-deps here,
+          # with the real deps listed explicitly in pyproject.toml,
+          # keeps this step from running the runner out of disk.
+          pip install --no-deps av2==0.3.6
 
       - name: Lint (ruff)
         run: ruff check .

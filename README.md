@@ -209,6 +209,7 @@ AWS credentials needed for this step — it's a public, unsigned bucket.
 git clone <this repo>
 cd hdmap-watch
 pip install -e ".[dev]"
+pip install --no-deps av2==0.3.6  # see "A note on av2's dependencies" below
 
 # whole ETL, real AWS bucket you control:
 python -m hdmap_watch.etl.run_etl --log-id 02678d04-cc9f-3148-9f95-1ba66347dff9 --bucket <your-bucket>
@@ -223,6 +224,20 @@ ruff check .
 # the full walkthrough with the design reasoning
 jupyter lab notebooks/01_pipeline_walkthrough.ipynb
 ```
+
+### A note on av2's dependencies
+
+`av2` (the Argoverse 2 devkit) declares `torch`, the full NVIDIA CUDA
+toolkit, `kornia`, `numba`, and `polars` as required dependencies —
+~7GB installed, and enough to run a GitHub Actions runner out of disk
+mid-install (this happened; see `git log`). None of it is touched by
+the two av2 modules this project actually imports
+(`av2.geometry.geometry`, `av2.map.map_api`). Their real,
+verified-by-import-error import-time dependencies are `matplotlib`,
+`opencv-python-headless`, `pillow`, and `universal-pathlib` — all
+listed directly in `pyproject.toml`. Installing `av2` itself with
+`--no-deps` skips the rest. Both CI workflows do this in a separate
+step after the main install. Total environment: ~900MB instead of ~7GB.
 
 ---
 

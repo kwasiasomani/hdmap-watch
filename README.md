@@ -1,98 +1,248 @@
-# hdmap-watch
+# HDMap Watch — LiDAR-Based HD Map Change Detection & Validation Pipeline
 
-**Automated triage for HD map QA**
-
-HD map QA is expensive because mapping specialists may need to inspect large
-numbers of lane-level features against sensor observations. HDMap Watch
-automatically compares HD-map geometry and topology against LiDAR-derived
-observations, identifies suspicious features, and ranks them for human review.
-
----
-
-## The business problem
+**Detects potentially stale or incorrect lane-level HD-map features by
+comparing map geometry and topology against LiDAR observations, then
+ranks suspicious features for human review.**
 
 An HD map for a single urban district contains tens of thousands of
-lane-level features: lane boundaries, centerlines, stop lines, crosswalks,
-connectivity between lanes. Every one of them can be wrong — surveyed
-incorrectly, invalidated by construction, or degraded by a localization error
-during capture.
-
-Validating them is manual. A specialist opens each feature alongside the
-sensor data and decides whether the map matches reality. At scale this is the
-dominant cost in map maintenance, and it does not parallelize cheaply because
-the scarce resource is trained attention.
-
-Most features are fine. The problem is not inspection — it is *deciding what
-to inspect*. HDMap Watch is a triage layer: it scores every feature, and
-returns a ranked queue short enough for a specialist to work through in an
-afternoon while still containing nearly all the genuine defects.
+lane-level features: lane boundaries, centerlines, connectivity between
+lanes, neighbor relationships. Every one of them can be wrong — surveyed
+incorrectly, invalidated by construction, or degraded by a localization
+error during capture. Checking them by hand doesn't scale, but *most
+features are fine* — so the job isn't inspection, it's triage: score
+every feature, and return a queue short enough for a specialist to work
+through in an afternoon while still containing nearly all the genuine
+defects.
 
 The metric that matters is therefore not accuracy in the abstract. It is:
 
-> **What fraction of features must a human review to catch a given fraction
-> of real defects?**
+> **What fraction of features must a human review to catch a given
+> fraction of real defects?**
 
 ---
 
-## How it works
+## Architecture
 
 ```
-   HD map                              LiDAR sweeps
-   lane boundaries, centerlines,       point clouds + ego pose
-   stop lines, crosswalks, topology
-              │                                │
-              └────────────┬───────────────────┘
-                           ▼
-              Stage 1  —  alignment
-              rigid-align the map to the
-              accumulated point cloud, so
-              localization error is not
-              mistaken for map error
-                           ▼
-              Stage 2  —  observability gate
-              per-feature point density and
-              range; features with too little
-              support are marked
-              unobservable, not suspicious
-                           ▼
-              Stage 3  —  geometric residual
-              distance from each map feature
-              to the nearest supporting
-              LiDAR evidence
-                           ▼
-              Stage 4  —  topology checks
-              dangling lane connections,
-              unreachable segments, stop
-              lines with no lane, geometry
-              that violates its own graph
-                           ▼
-              Stage 5  —  rank and threshold
-              combine residual, topology
-              violations and observability
-              into one suspicion score
-                           ▼
-              Stage 6  —  review queue
-              ranked GeoJSON + per-feature
-              crop, exported for QA tooling
-                           ▼
-              Stage 7  —  verdicts back in
-              reviewer labels feed the
-              evaluation set and recalibrate
-              the threshold
+                    HD Map + LiDAR Point Cloud
+                              |
+                              v
+                        AWS S3 (real)
+              raw/maps/<log_id>/, raw/lidar/<log_id>/
+                              |
+                              v
+                   Point Cloud Processor
+        target: Open3D — accumulate, downsample, align
+        today:  NumPy accumulation + map-raster ground filter
+                              |
+                              v
+                Map / Sensor Alignment
+              NOT YET IMPLEMENTED — see Limitations
+                              |
+                              v
+                    HD Map QA Engine
+                /             |              \
+         Geometry QA     Topology QA     Semantic QA
+        LiDAR residual   dangling lane   declared-neighbor
+        vs. lane paint    references     plausibility
+                \             |              /
+                 \            |             /
+                        Risk Scoring
+              unweighted vote across the 3 checks
+                              |
+                              v
+                       Priority Queue
+                              |
+                  +-----------+-----------+
+                  |                       |
+                  v                       v
+                PASS                  REVIEW
+                                          |
+                                          v
+                        AWS S3 (real): processed/review_queue/
+                                          |
+                                          v
+                                  Discord Alert
+                              real payload, dry-run today
+                                          |
+                                          v
+                               Mapping Specialist
 ```
 
-Stages 1 and 2 exist because of what the naive version gets wrong.
+Boxes marked **(real)** are actual, running AWS infrastructure — an S3
+bucket this pipeline extracts from, transforms, and loads into on every
+run, not a diagram of intent. Everything else is described honestly in
+[Status](#status).
 
-**Alignment first.** Without it, a small pose error shifts every feature in
-the log and the detector flags the entire map. Misalignment is a
-sensor problem masquerading as a map problem, and separating the two is most
-of the work.
+---
 
-**Observability before suspicion.** A lane boundary 60m out with nine points
-on it is not evidence of anything. Scoring it as if it were produces
-false positives that destroy reviewer trust faster than any other failure
-mode. Unobservable features are excluded from the queue rather than ranked
-low in it.
+## ETL
+
+The pipeline is a straightforward Extract → Transform → Load, in
+`hdmap_watch/etl/`:
+
+| Stage | Module | What it does |
+|---|---|---|
+| **Extract** | `extract.py` | Pulls one log's map, LiDAR, and pose from the public Argoverse 2 bucket (unsigned, no credentials needed). Idempotent — re-running skips files already downloaded at the right size. |
+| **Transform** | `transform.py` | The HD Map QA Engine: accumulates LiDAR into the city frame, ground-filters it, then runs Geometry QA, Topology QA, and Semantic QA, and combines them into a per-segment Risk Score and a PASS/REVIEW Priority Queue. Promoted from `notebooks/01_pipeline_walkthrough.ipynb`, where every threshold here was derived by looking at real data first. |
+| **Load** | `load.py` | Uploads the raw log to `s3://<bucket>/raw/{maps,lidar}/<log_id>/` and the scored queue to `s3://<bucket>/processed/review_queue/<log_id>.csv`. |
+
+Run the whole thing end to end:
+
+```bash
+python -m hdmap_watch.etl.run_etl \
+  --log-id 02678d04-cc9f-3148-9f95-1ba66347dff9 \
+  --bucket <your-bucket>
+```
+
+Or extract + transform only, with no AWS credentials at all:
+
+```bash
+python -m hdmap_watch.etl.run_etl \
+  --log-id 02678d04-cc9f-3148-9f95-1ba66347dff9 \
+  --no-upload
+```
+
+This has been run for real against `s3://hdmap-watch-455515343653` in
+`us-west-2` (private, public access blocked, SSE-AES256 default
+encryption) — 92 lane segments scored, 42 flagged REVIEW, 164 raw files
+plus the review queue landing in S3.
+
+---
+
+## Notebook: `notebooks/01_pipeline_walkthrough.ipynb`
+
+This is where the QA logic was designed and is still the place to read
+the reasoning, including — worth reading even if you skip the code —
+**two places where the first implementation failed, and one place where
+a fix that looked obviously correct wasn't**, documented rather than
+edited out:
+
+- **Geometry QA, attempt 1, fails.** A synthetic 0.6m lateral shift of a
+  real lane boundary went undetected, because matching against *any*
+  nearby ground-level LiDAR point can't tell painted lane markings apart
+  from ordinary pavement. Fixed by filtering to the brightest ground
+  returns (LiDAR intensity, a proxy for retroreflective paint) before
+  matching.
+- **Topology QA, naive version over-fires.** Flagging every dangling
+  `successor`/`predecessor` reference produced 17 hits on a 92-segment
+  map; 15–16 of them were just where this log's map tile happened to be
+  cropped, not real defects. Filtering by distance to the tile edge
+  fixes most of it — one case landed close enough to the margin that
+  calling it resolved rather than a judgment call would oversell it.
+- **Risk Scoring's aggregation rule is an open problem, not a solved
+  one.** Flagging a segment if *any* boundary vertex exceeds the
+  residual threshold catches 58% of observed segments — too many for a
+  usable queue. Switching to the *median* vertex per segment cuts that
+  to 9%, but also misses the injected defect used to prove Geometry QA
+  works at all. The pipeline keeps the noisier rule and says so, rather
+  than picking whichever one makes the demo look cleaner.
+
+It also has a cheat-sheet section at the end for explaining the
+project's reasoning out loud.
+
+---
+
+## CI/CD
+
+Two GitHub Actions workflows, in `.github/workflows/`:
+
+- **`ci.yml`** — every push/PR: install, `ruff check`, `pytest`. Fast,
+  no AWS, no data download. `tests/test_etl_load.py` mocks S3 with
+  `moto`, so the Load stage is tested without touching real AWS.
+- **`etl-smoke.yml`** — manual dispatch (pick a log id/split) plus a
+  weekly schedule. Always runs Extract + Transform against a real
+  public log (no credentials needed) and uploads the resulting queue as
+  a workflow artifact. If the repo has `AWS_ACCESS_KEY_ID`,
+  `AWS_SECRET_ACCESS_KEY`, and `HDMAP_WATCH_BUCKET` configured under
+  *Settings → Secrets and variables → Actions*, it also loads the
+  result into S3; otherwise it's a credential-free smoke test.
+
+These are committed but not pushed — review them before pushing so
+`etl-smoke.yml`'s schedule doesn't start firing on a fork or repo you
+don't intend it to.
+
+---
+
+## Status
+
+| Stage | Target | Today |
+|---|---|---|
+| Ingestion / Load | S3, fleet of jobs | **Real S3 bucket**, `hdmap_watch/etl/extract.py` + `load.py`, one log at a time |
+| Point Cloud Processor | Open3D | NumPy accumulation + AV2's map-raster ground filter, in `transform.py` |
+| Map/Sensor Alignment | Rigid (ICP) alignment | **Not implemented** — the single biggest gap; see Limitations |
+| Geometry QA | Calibrated, multi-log | Working, single-log, intensity-based lane-marking proxy |
+| Topology QA | Full city graph | Working, single-tile, edge-cropping caveat documented |
+| Semantic QA | Multiple semantic invariants | One check: declared-neighbor geometric plausibility |
+| Risk Scoring | Calibrated weights | Unweighted vote; aggregation problem open (see notebook) |
+| Priority Queue / PASS-REVIEW | — | Working |
+| Discord Alert | Live webhook | Real payload code, dry-run (no webhook configured) |
+| Mapping Specialist hand-off | Review UI | CSV in S3 (`processed/review_queue/<log_id>.csv`) |
+| CI/CD | Automated eval on push | **Implemented** — `ci.yml` + `etl-smoke.yml` |
+
+---
+
+## Data
+
+Argoverse 2's sensor dataset ships exactly the three things this needs
+per log: an HD map, LiDAR sweeps, and ego pose.
+
+```bash
+scripts/fetch_log.sh val 02678d04-cc9f-3148-9f95-1ba66347dff9
+```
+
+or equivalently `python -m hdmap_watch.etl.extract`, called by the ETL
+CLI above. Skips camera images (~90% of a log's size, unused here). No
+AWS credentials needed for this step — it's a public, unsigned bucket.
+~150MB per log.
+
+| Source | Role |
+|---|---|
+| [Argoverse 2](https://www.argoverse.org/av2.html) | Lane-level HD maps, LiDAR sweeps, ego pose |
+| [nuScenes](https://www.nuscenes.org/) | Alternative, smaller, HD maps included |
+
+---
+
+## Getting started
+
+```bash
+git clone <this repo>
+cd hdmap-watch
+pip install -e ".[dev]"
+
+# whole ETL, real AWS bucket you control:
+python -m hdmap_watch.etl.run_etl --log-id 02678d04-cc9f-3148-9f95-1ba66347dff9 --bucket <your-bucket>
+
+# or no AWS at all:
+python -m hdmap_watch.etl.run_etl --log-id 02678d04-cc9f-3148-9f95-1ba66347dff9 --no-upload
+
+# tests + lint
+pytest -q
+ruff check .
+
+# the full walkthrough with the design reasoning
+jupyter lab notebooks/01_pipeline_walkthrough.ipynb
+```
+
+---
+
+## Why alignment and observability come before scoring
+
+**Alignment (target, not yet built).** Without it, a small pose error
+shifts every feature in the log and the detector flags the entire map.
+Misalignment is a sensor problem masquerading as a map problem, and
+separating the two is most of the work — which is exactly why its
+absence is the headline limitation right now rather than a footnote.
+
+**Observability (implemented).** A lane boundary 60m out with a handful
+of points on it is not evidence of anything. In the one log this has
+been run against, ~55% of lane-boundary vertices were never near any
+LiDAR return at all — the vehicle simply never drove past that part of
+the map in a ~15 second log. Scoring those as "far from evidence" would
+be indistinguishable from a real defect, so they're excluded from the
+queue rather than ranked low in it. The same reasoning applies one
+layer up in Topology QA: a dangling reference at the edge of a cropped
+map tile isn't a broken lane, it's just where the map stops.
 
 ---
 
@@ -106,101 +256,38 @@ low in it.
 | Recall of injected defects | — |
 | Precision at operating threshold | — |
 
-Recall is measured against injected perturbations with known ground truth;
-precision against reviewer verdicts. *Placeholders until there is enough
-labelled data to report honestly.*
-
----
-
-## Evaluation method
-
-Real HD map versions with documented drift are not publicly available, so
-defects are injected into a known-good map and the detector is scored on
-whether it finds them.
-
-| Perturbation | Represents |
-|---|---|
-| Lateral shift of a lane boundary, 20–100cm | survey error, resurfacing |
-| Deleted crosswalk or stop line | removed marking |
-| Rotated stop line | intersection redesign |
-| Severed lane connection | construction closure |
-| Whole-tile pose offset | localization failure during capture |
-
-The last one is a control: a good detector should attribute it to
-misalignment in Stage 1 rather than reporting every feature in the tile as
-defective.
-
----
-
-## Getting started
-
-### Requirements
-
-- Python 3.10+
-- Argoverse 2 sensor dataset (a single log is enough to start)
-
-### Install
-
-```bash
-git clone https://github.com/<you>/hdmap-watch.git
-cd hdmap-watch
-pip install -e .
-```
-
-### Run
-
-```bash
-# score one log against its shipped map
-python -m hdmap_watch scan --log <log_id>
-
-# inject known defects and report recall
-python -m hdmap_watch eval --log <log_id> --perturb lane_shift,stopline_delete
-```
-
-Outputs `out/queue.geojson`, ranked by suspicion score, plus a per-feature
-crop for review.
-
----
-
-## Two-week build plan
-
-| Days | Deliverable |
-|---|---|
-| 1–2 | Load one Argoverse 2 log: map features, LiDAR sweeps, ego pose. Render both together. |
-| 3–4 | Accumulate sweeps into a single cloud in map frame. Ground/non-ground split. |
-| 5–6 | Geometric residual for lane boundaries. First ranked queue, however crude. |
-| 7 | Perturbation harness — inject defects, measure recall. Baseline number. |
-| 8–9 | Rigid alignment stage. Re-measure; expect the largest single precision gain. |
-| 10 | Observability gating on point density and range. Re-measure. |
-| 11 | Topology checks. |
-| 12 | Scale to 10+ logs. Record the headline numbers. |
-| 13 | Review export, README results table, short write-up of failure modes. |
-| 14 | Buffer. Something will take twice as long as planned. |
-
-Days 7, 9 and 10 are the ones that matter. Each produces a before/after
-number, and those numbers are the substance of the project.
+Recall is measured against injected perturbations with known ground
+truth; precision against reviewer verdicts. *Placeholders until there
+is enough labelled data to report honestly* — the notebook's aggregation
+finding above is exactly why: on one log, the natural noise floor of an
+intensity-based lane-marking proxy is close in magnitude to a 1m defect,
+so no threshold tried separates them cleanly without labeled data across
+many logs.
 
 ---
 
 ## Limitations
 
-- Argoverse 2 maps are treated as ground truth; where they are themselves
-  wrong, the detector will appear to produce false positives
-- Injected perturbations are not a substitute for real map drift, and may not
-  reproduce its distribution
-- Vertical geometry is largely unhandled; the current scoring is planar
-- Dense urban occlusion suppresses observability and causes misses
+- **No alignment stage.** Every QA check downstream currently can't tell
+  "the map is wrong" apart from "the pose was wrong." Argoverse 2's
+  poses are accurate enough that this doesn't break the demo, but it's
+  a load-bearing assumption, not a guarantee.
+- **Geometry QA's lane-marking proxy is a percentile picked by eye**
+  (brightest 10% of ground returns), not calibrated per sensor or road
+  surface.
+- **Risk Scoring's aggregation rule is unresolved** — see the notebook
+  and Status table.
+- **Single log, single tile.** Topology QA can't distinguish a real
+  dangling reference from a map-crop boundary without the full city
+  graph.
+- **CI has no AWS credentials by default** — `etl-smoke.yml` exercises
+  Extract + Transform only unless secrets are added, so Load is only
+  covered by the mocked `moto` unit tests in CI, not a real upload.
+- Argoverse 2 maps are treated as ground truth; where they are
+  themselves wrong, checks will appear to produce false positives.
+- Vertical geometry is unhandled; all scoring is planar (x, y).
 - No handling of features absent from the map entirely — this compares
-  existing geometry rather than discovering new features
-
----
-
-## Data
-
-| Source | Role |
-|---|---|
-| [Argoverse 2](https://www.argoverse.org/av2.html) | Lane-level HD maps, LiDAR sweeps, ego pose |
-| [nuScenes](https://www.nuscenes.org/) | Alternative, smaller, HD maps included |
+  existing geometry rather than discovering new features.
 
 ---
 
@@ -208,24 +295,27 @@ number, and those numbers are the substance of the project.
 
 ```
 hdmap_watch/
-  io.py           load map features, sweeps, poses
-  align.py        rigid alignment, map frame to point cloud
-  observe.py      per-feature point density and range gating
-  residual.py     geometric distance scoring
-  topology.py     graph consistency checks
-  rank.py         score combination and thresholding
-  perturb.py      defect injection for evaluation
-  export.py       ranked review queue
+  etl/
+    extract.py            pull one log from the public AV2 bucket
+    transform.py           HD Map QA Engine + Risk Scoring
+    load.py                 push raw log + review queue to S3
+    run_etl.py               CLI: extract -> transform -> load
+notebooks/
+  01_pipeline_walkthrough.ipynb   design + reasoning + failure narrative
+scripts/
+  fetch_log.sh             shell alternative to extract.py
+.github/workflows/
+  ci.yml                   lint + unit tests (mocked S3) on push/PR
+  etl-smoke.yml             real-data smoke test, manual + weekly
+data/                       downloaded logs (gitignored)
+out/                         review_queue_<log_id>.csv
 tests/
-  fixtures/       one trimmed log, known perturbations
+  test_transform.py
+  test_etl_load.py           mocked-S3 (moto) tests for load.py
+  fixtures/
 ```
 
 ---
-
-## Status
-
-Under active development. See the two-week plan above for what exists and
-what does not.
 
 ## License
 

@@ -1,0 +1,51 @@
+name: ETL smoke test
+
+on:
+  workflow_dispatch:
+    inputs:
+      log_id:
+        description: "Argoverse 2 log id"
+        default: "02678d04-cc9f-3148-9f95-1ba66347dff9"
+      split:
+        description: "train | val | test"
+        default: "val"
+  schedule:
+    - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC
+
+jobs:
+  etl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install
+        run: pip install -e .
+
+      - name: Run ETL
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-west-2
+          BUCKET: ${{ secrets.HDMAP_WATCH_BUCKET }}
+          LOG_ID: ${{ github.event.inputs.log_id || '02678d04-cc9f-3148-9f95-1ba66347dff9' }}
+          SPLIT: ${{ github.event.inputs.split || 'val' }}
+        run: |
+          # Extract (public bucket, no credentials needed) + transform always run.
+          # Load only runs against S3 if HDMAP_WATCH_BUCKET / AWS secrets are configured
+          # on this repo (Settings -> Secrets and variables -> Actions) -- otherwise
+          # this is a credential-free smoke test of extract + transform only.
+          if [ -n "$BUCKET" ]; then
+            python -m hdmap_watch.etl.run_etl --log-id "$LOG_ID" --split "$SPLIT" --bucket "$BUCKET" --skip-upload-raw
+          else
+            python -m hdmap_watch.etl.run_etl --log-id "$LOG_ID" --split "$SPLIT" --no-upload
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: review-queue
+          path: out/*.csv

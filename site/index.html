@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HDMap Watch</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <section class="hero">
+    <svg class="hero-sweep" viewBox="0 0 620 620" aria-hidden="true">
+      <circle cx="310" cy="310" r="80" />
+      <circle cx="310" cy="310" r="150" />
+      <circle cx="310" cy="310" r="220" />
+      <circle cx="310" cy="310" r="290" />
+      <g class="sweep-arm">
+        <defs>
+          <linearGradient id="sweepGrad" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="var(--accent)" stop-opacity="0" />
+            <stop offset="100%" stop-color="var(--accent)" stop-opacity="0.55" />
+          </linearGradient>
+        </defs>
+        <line x1="310" y1="310" x2="310" y2="20" stroke="url(#sweepGrad)" stroke-width="3" />
+      </g>
+    </svg>
+
+    <header class="hero-content">
+      <div class="header-top">
+        <div>
+          <div class="eyebrow"><span class="dot"></span>LiDAR-verified map QA</div>
+          <h1>HDMap Watch</h1>
+        </div>
+        <div class="header-actions">
+          <a class="ghost-btn" id="notify-btn" href="mailto:" title="Draft an email to reviewers listing the flagged segments">✉ Notify reviewers</a>
+          <button class="icon-btn" id="help-btn" aria-haspopup="dialog" aria-label="Help">?</button>
+        </div>
+      </div>
+      <p class="thesis">"Detects potentially stale or incorrect lane-level HD-map features by comparing map geometry and topology against LiDAR observations, then ranks suspicious features for human review."</p>
+      <div class="log-line">
+        <span>Log:</span>
+        <select class="log-select" id="log-select"></select>
+        <span class="log-note" id="log-note"></span>
+      </div>
+      <div class="region-chips" id="region-chips"></div>
+    </header>
+  </section>
+
+  <section class="stats">
+    <div class="tile"><div class="num mono" id="stat-total">—</div><div class="label">Segments scored</div></div>
+    <div class="tile pass"><div class="num mono" id="stat-pass">—</div><div class="label">Pass</div></div>
+    <div class="tile review"><div class="num mono" id="stat-review">—</div><div class="label">Flagged for review</div></div>
+    <div class="tile rate"><div class="num mono" id="stat-rate">—</div><div class="label">Review rate</div></div>
+    <div class="tile regions"><div class="num mono" id="stat-regions">—</div><div class="label">Regions covered</div></div>
+  </section>
+
+  <section class="charts">
+    <div class="chart-card">
+      <div class="chart-title">Pass vs. review</div>
+      <div class="donut-row">
+        <svg id="donut-svg" width="120" height="120" viewBox="0 0 140 140"></svg>
+        <div class="legend-col">
+          <div class="legend-row"><span class="swatch" style="background:var(--pass)"></span>Pass<span class="count mono" id="donut-pass-n"></span></div>
+          <div class="legend-row"><span class="swatch" style="background:var(--review)"></span>Review<span class="count mono" id="donut-review-n"></span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="chart-card">
+      <div class="chart-title">Risk score distribution</div>
+      <div class="chart-sub">0 = clean · 3 = failed every check</div>
+      <div class="bar-rows" id="risk-bars"></div>
+    </div>
+
+    <div class="chart-card">
+      <div class="chart-title">Which check fired</div>
+      <div class="chart-sub">segments flagged, by check</div>
+      <div class="bar-rows" id="check-bars"></div>
+      <div class="bar-legend" id="check-legend"></div>
+    </div>
+  </section>
+
+  <section class="console">
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">Lane geometry</span>
+        <span class="panel-sub" id="map-sub"></span>
+      </div>
+      <div class="map-wrap">
+        <svg id="map-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+      </div>
+      <div class="legend">
+        <div class="legend-item"><span class="swatch pass"></span>Pass</div>
+        <div class="legend-item"><span class="swatch review"></span>Flagged for review</div>
+        <div class="legend-item" style="color:var(--ink-faint)">Colored by final risk status &middot; hover a lane, or a row at right</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <span class="panel-title">Priority queue</span>
+        <span class="panel-sub" id="queue-sub"></span>
+      </div>
+      <div class="controls">
+        <input class="seg-search" id="search" type="text" placeholder="Filter by segment id&hellip;" />
+        <button class="filter-btn" data-filter="all" aria-pressed="true">All</button>
+        <button class="filter-btn" data-filter="REVIEW" aria-pressed="false">Review</button>
+        <button class="filter-btn" data-filter="PASS" aria-pressed="false">Pass</button>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:30px">#</th>
+              <th><button class="th-sort" data-sort="id">Segment ID <span class="arrow">▲</span></button></th>
+              <th><button class="th-sort" data-sort="risk" data-active="true">Risk <span class="arrow">▼</span></button></th>
+              <th>Status</th>
+              <th>Checks</th>
+            </tr>
+          </thead>
+          <tbody id="queue-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <div class="modal-backdrop" id="help-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="help-title">
+      <div class="modal-head">
+        <h2 id="help-title">How to read this page</h2>
+        <button class="icon-btn" id="help-close" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p>Every lane segment in a real Argoverse&nbsp;2 log is scored by three independent checks and combined into an unweighted risk vote (0&ndash;3). Anything with risk&nbsp;&ge;&nbsp;1 goes to <b>REVIEW</b>.</p>
+        <p>Hover a table row to find it on the map; hover a lane on the map to find its row. Switch regions above &mdash; each one is pulled, scored, and loaded into S3 by the same ETL pipeline: <b>Extract</b> (public AV2 bucket) &rarr; <b>Transform</b> (the three checks below) &rarr; <b>Load</b> (S3, raw log + this review queue).</p>
+        <div class="checks-key">
+          <span><b class="mono" style="color:var(--cat-geometry)">G</b>&nbsp; Geometry &mdash; LiDAR residual vs. candidate lane-marking points</span>
+          <span><b class="mono" style="color:var(--cat-topology)">T</b>&nbsp; Topology &mdash; dangling successor/predecessor references</span>
+          <span><b class="mono" style="color:var(--cat-semantic)">S</b>&nbsp; Semantic &mdash; declared-neighbor plausibility</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tooltip" id="tooltip"></div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

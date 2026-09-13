@@ -1,42 +1,61 @@
 # HDMap Watch
 
-Compare Argoverse 2 lane maps with LiDAR observations and rank potential errors for human review. The dashboard shows lane geometry, risk scores, and a filterable review queue.
+HDMap Watch compares lane-level HD maps with LiDAR observations to flag
+potential map errors for human review. It uses Argoverse 2 data and saves
+a CSV review queue, with optional uploads to AWS S3.
 
-## Run the dashboard
+## What it does
 
-Requires Node.js and npm (CI uses Node 20).
+- Checks lane geometry against bright ground-level LiDAR returns.
+- Checks lane connections and neighboring-lane relationships.
+- Scores lane segments and labels them PASS or REVIEW.
 
-```bash
-cd site
-npm ci
-npm run dev
-```
+## Getting started
 
-Open the local URL printed by Vite. Pittsburgh and Miami data are included; AWS is not required. Run `npm run build` to create `site/dist/`.
-
-## Run the data pipeline
-
-Use Python 3.11 or 3.12 (CI uses 3.12); the pinned AV2 package has no Python 3.14 wheel.
+Requires Python 3.10 or later. From the project directory, install:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
 pip install -e ".[dev]"
 pip install --no-deps av2==0.3.6
-python -m hdmap_watch.etl.run_etl \
-  --log-id 02678d04-cc9f-3148-9f95-1ba66347dff9 --no-upload
 ```
 
-AV2 is installed separately to avoid its unused heavyweight dependencies. The pipeline downloads public map, LiDAR, and pose data and writes `out/review_queue_<log_id>.csv`.
+Install `av2` separately with `--no-deps` to skip unused heavyweight
+dependencies. The dependencies used by this project are in `pyproject.toml`.
 
-For S3, configure AWS credentials locally and replace `--no-upload` with `--bucket YOUR_BUCKET`. This uploads raw data under `raw/maps/` and `raw/lidar/`, and results under `processed/review_queue/`. Add `--skip-upload-raw` to upload only the results. Uploading does not refresh the dashboard's bundled JSON.
+Run on a public Argoverse 2 log without AWS credentials:
 
-## Checks and limitations
+```bash
+python -m hdmap_watch.etl.run_etl \
+  --log-id 02678d04-cc9f-3148-9f95-1ba66347dff9 \
+  --no-upload
+```
 
-Run `pytest -q` and `ruff check .` from the project root; run `npm run build` inside `site/`.
+The command downloads the log, runs the checks, and writes
+`out/review_queue_<log_id>.csv`.
 
-Geometry, topology, and neighbor checks contribute one risk vote each. A score of 1–3 means REVIEW; PASS means no check fired, not proof of correctness. Alignment errors, limited observations, and heuristic thresholds can affect results; precision and recall are not yet established.
+To also upload the raw data and review queue to S3, configure AWS
+credentials and replace `--no-upload` with `--bucket <your-bucket>`.
 
-The [executed notebook](notebooks/01_pipeline_walkthrough.ipynb) shows real LiDAR, coordinate transforms, and QA results. Its [PNG figures](notebooks/images/) are ready to view or share. On this Mac, select `.venv/notebook/bin/python` as its kernel.
+## Development
 
-[Interview and learning guide](reamd_lear.md) · [Walkthrough notebook](notebooks/01_pipeline_walkthrough.ipynb) · [MIT license](LICENSE)
+Run tests and lint:
+
+```bash
+pytest -q
+ruff check .
+```
+
+See [the walkthrough notebook](notebooks/01_pipeline_walkthrough.ipynb)
+for the QA logic, experiments, and known tradeoffs.
+
+## Limitations
+
+- Map/sensor alignment is not implemented, so pose errors can look like map errors.
+- Geometry thresholds and risk scoring need calibration across more logs.
+- Cropped map edges can produce false topology flags.
+- Checks use existing map features in 2D; they do not discover missing features.
+- Precision and recall have not yet been established with enough labeled data.
+
+## License
+
+MIT

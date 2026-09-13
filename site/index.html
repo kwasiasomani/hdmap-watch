@@ -10,6 +10,7 @@
     href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
     rel="stylesheet"
   />
+  <link rel="stylesheet" href="/src/style.css" />
 </head>
 <body>
   <section class="hero">
@@ -37,12 +38,12 @@
         </div>
         <div class="header-actions">
           <a class="ghost-btn" id="notify-btn" href="mailto:" title="Draft an email to reviewers listing the flagged segments">✉ Notify reviewers</a>
-          <button class="ghost-btn" id="help-btn" aria-haspopup="dialog" aria-label="Help">Help</button>
+          <button class="icon-btn" id="help-btn" aria-haspopup="dialog" aria-label="Help">?</button>
         </div>
       </div>
-      <p class="thesis">Choose a region, inspect its lanes, and review flagged segments. Open Help for the scoring guide.</p>
+      <p class="thesis">"Detects potentially stale or incorrect lane-level HD-map features by comparing map geometry and topology against LiDAR observations, then ranks suspicious features for human review."</p>
       <div class="log-line">
-        <label for="log-select">Log:</label>
+        <span>Log:</span>
         <select class="log-select" id="log-select"></select>
         <span class="log-note" id="log-note"></span>
       </div>
@@ -50,8 +51,7 @@
     </header>
   </section>
 
-  <main aria-label="Map quality dashboard">
-  <section class="stats" aria-label="Summary">
+  <section class="stats">
     <div class="tile"><div class="num mono" id="stat-total">—</div><div class="label">Segments scored</div></div>
     <div class="tile pass"><div class="num mono" id="stat-pass">—</div><div class="label">Pass</div></div>
     <div class="tile review"><div class="num mono" id="stat-review">—</div><div class="label">Flagged for review</div></div>
@@ -97,7 +97,7 @@
       <div class="legend">
         <div class="legend-item"><span class="swatch pass"></span>Pass</div>
         <div class="legend-item"><span class="swatch review"></span>Flagged for review</div>
-        <div class="legend-item" style="color:var(--ink-faint)">Colored by final risk status &middot; hover a lane or queue row to inspect</div>
+        <div class="legend-item" style="color:var(--ink-faint)">Colored by final risk status &middot; hover a lane, or a row at right</div>
       </div>
     </div>
 
@@ -107,7 +107,7 @@
         <span class="panel-sub" id="queue-sub"></span>
       </div>
       <div class="controls">
-        <input class="seg-search" id="search" aria-label="Filter by segment ID" type="search" placeholder="Filter by segment id&hellip;" />
+        <input class="seg-search" id="search" type="text" placeholder="Filter by segment id&hellip;" />
         <button class="filter-btn" data-filter="all" aria-pressed="true">All</button>
         <button class="filter-btn" data-filter="REVIEW" aria-pressed="false">Review</button>
         <button class="filter-btn" data-filter="PASS" aria-pressed="false">Pass</button>
@@ -128,8 +128,6 @@
       </div>
     </div>
   </section>
-
-  </main>
 
   <div class="modal-backdrop" id="help-backdrop" hidden>
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="help-title">
